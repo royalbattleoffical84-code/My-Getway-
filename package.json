@@ -1,0 +1,13 @@
+{
+  "name": "payx-backend",
+  "version": "1.0.0",
+  "description": "PayX payment gateway backend (Express + Firebase Realtime Database + FamApi)",
+  "main": "server.js",
+  "scripts": { "start": "node server.js" },
+  "engines": { "node": ">=18" },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.19.2",
+    "firebase-admin": "^12.6.0"
+  }
+}
