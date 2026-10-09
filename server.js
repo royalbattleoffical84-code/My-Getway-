@@ -278,7 +278,7 @@ app.use((req, res, next) => { res.set({ 'X-Content-Type-Options': 'nosniff', 'Re
 app.get('/health', (req, res) => res.json({ ok: true, time: Date.now() }));
 
 /* ----- public ----- */
-app.get('/api/config/public', ah(async (req, res) => { const c = await getCfg(); ok(res, { config: { siteName: c.siteName, tagline: c.tagline, support: c.support, feePercent: c.feePercent, minAmount: c.minAmount, maxAmount: c.maxAmount, maintenance: c.maintenance, paymentUpiId: c.paymentUpiId || '' } }); }));
+app.get('/api/config/public', ah(async (req, res) => { const c = await getCfg(); ok(res, { config: { siteName: c.siteName, tagline: c.tagline, support: c.support, feePercent: c.feePercent, minAmount: c.minAmount, maxAmount: c.maxAmount, maintenance: c.maintenance, paymentUpiId: c.paymentUpiId || '', aiEnabled: c.aiEnabled !== false, aiWelcome: c.aiWelcome || 'Hi! I am PayX AI. Ask me about API integration, payment status, webhooks, wallet or Premium membership.', premiumEnabled: c.premiumEnabled !== false, premiumPrice: Number(c.premiumPrice ?? 399), premiumDays: Number(c.premiumDays ?? 30), premiumDescription: c.premiumDescription || 'More benefits for growing merchants.', premiumBenefit1: c.premiumBenefit1 || 'Priority support', premiumBenefit2: c.premiumBenefit2 || 'Faster support response', premiumBenefit3: c.premiumBenefit3 || 'Premium merchant tools' } }); }));
 
 app.post('/api/auth/signup', limit('auth', 10, 60000), ah(async (req, res) => {
   const name = String(req.body.name || '').trim(), email = String(req.body.email || '').trim().toLowerCase(), pw = String(req.body.password || '');
@@ -458,12 +458,9 @@ app.get('/api/admin/data', aAuth, ah(async (req, res) => {
   ok(res, { users, orders, config: cfg, famConfigured: !!FAM_KEY, merchantFamConfigured: false, withdrawals, topups: [], apiDocs, prompts });
 }));
 app.put('/api/admin/config', aAuth, ah(async (req, res) => {
-  // Support partial updates (e.g. saving or resetting only the Payment UPI ID).
-  // Merge with the current configuration before validating numeric settings.
-  const current = await getCfg();
-  const b = { ...current, ...(req.body || {}) }, n = x => Number(x);
-  const v = { siteName: String(b.siteName || 'PayX').trim().slice(0, 40) || 'PayX', tagline: String(b.tagline || '').trim().slice(0, 120), support: String(b.support || '').trim().slice(0, 300), feePercent: n(b.feePercent), minAmount: n(b.minAmount), maxAmount: n(b.maxAmount), expiryMin: n(b.expiryMin), maintenance: !!b.maintenance, paymentUpiId: String(b.paymentUpiId ?? '').trim().slice(0, 120) };
-  if ([v.feePercent, v.minAmount, v.maxAmount, v.expiryMin].some(x => !isFinite(x) || x < 0) || v.minAmount > v.maxAmount || v.expiryMin < 1 || v.feePercent > 50) return fail(res, 400, 'VALIDATION_ERROR', 'Check the numbers: fee, limits and payment window must be valid.');
+  const b = req.body, n = x => Number(x);
+  const v = { siteName: String(b.siteName || 'PayX').trim().slice(0, 40) || 'PayX', tagline: String(b.tagline || '').trim().slice(0, 120), support: String(b.support || '').trim().slice(0, 300), feePercent: n(b.feePercent), minAmount: n(b.minAmount), maxAmount: n(b.maxAmount), expiryMin: n(b.expiryMin), maintenance: !!b.maintenance, paymentUpiId: String(b.paymentUpiId ?? '').trim().slice(0, 120), aiEnabled: b.aiEnabled !== false, aiWelcome: String(b.aiWelcome || 'Hi! I am PayX AI. Ask me about API integration, payment status, webhooks, wallet or Premium membership.').slice(0, 500), premiumEnabled: b.premiumEnabled !== false, premiumPrice: n(b.premiumPrice ?? 399), premiumDays: n(b.premiumDays ?? 30), premiumDescription: String(b.premiumDescription || 'More benefits for growing merchants.').slice(0, 250), premiumBenefit1: String(b.premiumBenefit1 || 'Priority support').slice(0, 120), premiumBenefit2: String(b.premiumBenefit2 || 'Faster support response').slice(0, 120), premiumBenefit3: String(b.premiumBenefit3 || 'Premium merchant tools').slice(0, 120) };
+  if ([v.feePercent, v.minAmount, v.maxAmount, v.expiryMin, v.premiumPrice, v.premiumDays].some(x => !isFinite(x) || x < 0) || v.minAmount > v.maxAmount || v.expiryMin < 1 || v.feePercent > 50 || v.premiumDays < 1 || v.premiumDays > 3650 || v.premiumPrice > 10000000) return fail(res, 400, 'VALIDATION_ERROR', 'Check the numeric settings, limits and membership duration.');
   await db.ref('settings/config').set(v); await getCfg(true); ok(res);
 }));
 app.post('/api/admin/test-fam', aAuth, ah(async (req, res) => {
