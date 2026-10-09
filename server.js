@@ -19,11 +19,14 @@ const DB_URL = process.env.FIREBASE_DB_URL || 'https://getway-2ed8b-default-rtdb
 const FAM_KEY = process.env.FAMAPI_KEY || '';
 const FAM_BASE = (process.env.FAMAPI_BASE || 'https://famapi-orcin.vercel.app').replace(/\/$/, '');
 const TOKEN_SECRET = process.env.TOKEN_SECRET || '';
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
+const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
 const PUBLIC_URL = (process.env.PUBLIC_URL || '').replace(/\/$/, '');
 const ORIGINS = (process.env.ALLOWED_ORIGINS || '').split(',').map(s => s.trim()).filter(Boolean);
 
 if (TOKEN_SECRET.length < 16) { console.error('FATAL: set TOKEN_SECRET env var (16+ random characters).'); process.exit(1); }
 if (!FAM_KEY) console.warn('WARNING: FAMAPI_KEY is not set. Payments cannot be created.');
+if (!GEMINI_API_KEY) console.warn('WARNING: GEMINI_API_KEY is not set. PayX AI will use built-in fallback answers.');
 
 function loadServiceAccount() {
   const raw = (process.env.FIREBASE_SERVICE_ACCOUNT || '').trim();
@@ -546,6 +549,20 @@ app.put('/api/admin/docs/:id', aAuth, ah(async (req, res) => {
 app.delete('/api/admin/docs/:id', aAuth, ah(async (req, res) => { await db.ref('settings/apiDocs/' + req.params.id).remove(); ok(res); }));
 
 /* ----- built-in AI prompts ----- */
+app.post('/api/ai/chat', limit('ai-chat', 20, 60000), ah(async (req, res) => {
+  const question = String((req.body || {}).question || '').trim().slice(0, 2000);
+  if (!question) return fail(res, 400, 'VALIDATION_ERROR', 'Enter a question first.');
+  if (!GEMINI_API_KEY) return fail(res, 503, 'AI_NOT_CONFIGURED', 'PayX AI live model is not configured yet. Add GEMINI_API_KEY in backend environment variables.');
+  const prompt = 'You are PayX AI, a concise assistant for a payment gateway merchant dashboard. Help with PayX API integration, server-side payment verification, webhooks, wallet concepts, account settings and Premium plan information. Never ask for passwords, OTPs, full payment card details or secret API keys. Never claim a payment succeeded without a verified backend response. Explain that membership activation requires verified payment and trusted backend action. If asked for current account/payment status, explain you cannot access live account records from chat. Answer clearly in the language used by the user.\n\nMerchant question: ' + question;
+  const endpoint = 'https://generativelanguage.googleapis.com/v1beta/models/' + encodeURIComponent(GEMINI_MODEL) + ':generateContent';
+  const response = await fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-goog-api-key': GEMINI_API_KEY }, body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig: { temperature: 0.35, maxOutputTokens: 700 } }), signal: AbortSignal.timeout(20000) });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) { console.error('Gemini API request failed:', response.status, data.error && data.error.status); return fail(res, 502, 'AI_PROVIDER_ERROR', 'PayX AI is temporarily unavailable. Please try again shortly.'); }
+  const answer = (data.candidates && data.candidates[0] && data.candidates[0].content && data.candidates[0].content.parts || []).map(p => p.text || '').join('').trim();
+  if (!answer) return fail(res, 502, 'AI_EMPTY_RESPONSE', 'PayX AI did not return an answer. Please try again.');
+  ok(res, { answer });
+}));
+
 app.get('/api/ai/prompts', ah(async (req, res) => {
   const snap = await db.ref('settings/aiPrompts').orderByChild('order').get();
   const prompts = [];
