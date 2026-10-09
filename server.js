@@ -37,7 +37,7 @@ const db = admin.database();
 const DEFAULTS = {
   siteName: 'PayX', tagline: "India's Fastest and Secured Platform",
   feePercent: 2, minAmount: 1, maxAmount: 100000, expiryMin: 15,
-  support: 'https://t.me/ShivamXoffical01', maintenance: false
+  support: 'https://t.me/ShivamXoffical01', maintenance: false, paymentUpiId: ''
 };
 
 /* ---------- small utils ---------- */
@@ -278,7 +278,7 @@ app.use((req, res, next) => { res.set({ 'X-Content-Type-Options': 'nosniff', 'Re
 app.get('/health', (req, res) => res.json({ ok: true, time: Date.now() }));
 
 /* ----- public ----- */
-app.get('/api/config/public', ah(async (req, res) => { const c = await getCfg(); ok(res, { config: { siteName: c.siteName, tagline: c.tagline, support: c.support, feePercent: c.feePercent, minAmount: c.minAmount, maxAmount: c.maxAmount, maintenance: c.maintenance } }); }));
+app.get('/api/config/public', ah(async (req, res) => { const c = await getCfg(); ok(res, { config: { siteName: c.siteName, tagline: c.tagline, support: c.support, feePercent: c.feePercent, minAmount: c.minAmount, maxAmount: c.maxAmount, maintenance: c.maintenance, paymentUpiId: c.paymentUpiId || '' } }); }));
 
 app.post('/api/auth/signup', limit('auth', 10, 60000), ah(async (req, res) => {
   const name = String(req.body.name || '').trim(), email = String(req.body.email || '').trim().toLowerCase(), pw = String(req.body.password || '');
@@ -346,7 +346,7 @@ app.post('/api/checkout/:id/prepare', limit('coprep', 20, 60000), ah(async (req,
   await ref
 .update({
     famOrderId: d.order.id,
-    upiId: d.order.upiId,
+    upiId: cfg.paymentUpiId || d.order.upiId || '',
     status: 'pending',
     startedAt: Date.now(),
     expiresAt: Date.now() + cfg.expiryMin * 60000
@@ -440,24 +440,26 @@ app.post('/api/admin/login', limit('alogin', 8, 600000), ah(async (req, res) => 
   ok(res, { token: signToken({ r: 'a', pv: a.pass.slice(-8) }, 12 * 3600e3) });
 }));
 app.get('/api/admin/data', aAuth, ah(async (req, res) => {
-  const [us, os, wd, docs, cfg] = await Promise.all([
+  const [us, os, wd, docs, promptsSnap, cfg] = await Promise.all([
     db.ref('users').get(),
     db.ref('orders').orderByChild('createdAt').limitToLast(500).get(),
     db.ref('withdrawals').orderByChild('createdAt').limitToLast(300).get(),
     db.ref('settings/apiDocs').orderByChild('order').get(),
+    db.ref('settings/aiPrompts').orderByChild('order').get(),
     getCfg(true)
   ]);
-  const users = [], orders = [], withdrawals = [], apiDocs = [];
+  const users = [], orders = [], withdrawals = [], apiDocs = [], prompts = [];
   us.forEach(c => { users.push(safeUser(c.val())); });
   os.forEach(c => { orders.push(cleanOrder(c.val())); });
   wd.forEach(c => { withdrawals.push(c.val()); });
   docs.forEach(c => { apiDocs.push(c.val()); });
+  promptsSnap.forEach(c => { prompts.push(c.val()); });
   users.sort((a, b) => b.createdAt - a.createdAt); orders.sort((a, b) => b.createdAt - a.createdAt); withdrawals.sort((a, b) => b.createdAt - a.createdAt);
-  ok(res, { users, orders, config: cfg, famConfigured: !!FAM_KEY, merchantFamConfigured: false, withdrawals, topups: [], apiDocs });
+  ok(res, { users, orders, config: cfg, famConfigured: !!FAM_KEY, merchantFamConfigured: false, withdrawals, topups: [], apiDocs, prompts });
 }));
 app.put('/api/admin/config', aAuth, ah(async (req, res) => {
   const b = req.body, n = x => Number(x);
-  const v = { siteName: String(b.siteName || 'PayX').trim().slice(0, 40) || 'PayX', tagline: String(b.tagline || '').trim().slice(0, 120), support: String(b.support || '').trim().slice(0, 300), feePercent: n(b.feePercent), minAmount: n(b.minAmount), maxAmount: n(b.maxAmount), expiryMin: n(b.expiryMin), maintenance: !!b.maintenance };
+  const v = { siteName: String(b.siteName || 'PayX').trim().slice(0, 40) || 'PayX', tagline: String(b.tagline || '').trim().slice(0, 120), support: String(b.support || '').trim().slice(0, 300), feePercent: n(b.feePercent), minAmount: n(b.minAmount), maxAmount: n(b.maxAmount), expiryMin: n(b.expiryMin), maintenance: !!b.maintenance, paymentUpiId: String(b.paymentUpiId ?? '').trim().slice(0, 120) };
   if ([v.feePercent, v.minAmount, v.maxAmount, v.expiryMin].some(x => !isFinite(x) || x < 0) || v.minAmount > v.maxAmount || v.expiryMin < 1 || v.feePercent > 50) return fail(res, 400, 'VALIDATION_ERROR', 'Check the numbers: fee, limits and payment window must be valid.');
   await db.ref('settings/config').set(v); await getCfg(true); ok(res);
 }));
@@ -542,6 +544,30 @@ app.put('/api/admin/docs/:id', aAuth, ah(async (req, res) => {
   await ref.update(d); ok(res, { doc: { id: req.params.id, ...d } });
 }));
 app.delete('/api/admin/docs/:id', aAuth, ah(async (req, res) => { await db.ref('settings/apiDocs/' + req.params.id).remove(); ok(res); }));
+
+/* ----- built-in AI prompts ----- */
+app.get('/api/ai/prompts', ah(async (req, res) => {
+  const snap = await db.ref('settings/aiPrompts').orderByChild('order').get();
+  const prompts = [];
+  snap.forEach(c => { const p = c.val(); if (p.enabled !== false) prompts.push({ id: p.id, title: p.title, category: p.category || 'General', prompt: p.prompt, description: p.description || '', order: p.order || 1 }); });
+  ok(res, { prompts });
+}));
+app.post('/api/admin/prompts', aAuth, ah(async (req, res) => {
+  const b = req.body || {}, title = String(b.title || '').trim().slice(0, 120), prompt = String(b.prompt || '').trim().slice(0, 10000);
+  if (!title || !prompt) return fail(res, 400, 'VALIDATION_ERROR', 'Prompt title and prompt text are required.');
+  const id = rid('PRM', 8);
+  const d = { id, title, category: String(b.category || 'General').trim().slice(0, 60) || 'General', prompt, description: String(b.description || '').trim().slice(0, 500), order: Number(b.order) || 1, enabled: b.enabled !== false, createdAt: Date.now(), updatedAt: Date.now() };
+  await db.ref('settings/aiPrompts/' + id).set(d); ok(res, { prompt: d });
+}));
+app.put('/api/admin/prompts/:id', aAuth, ah(async (req, res) => {
+  const ref = db.ref('settings/aiPrompts/' + req.params.id);
+  if (!(await ref.get()).exists()) return fail(res, 404, 'NOT_FOUND', 'AI prompt not found.');
+  const b = req.body || {}, title = String(b.title || '').trim().slice(0, 120), prompt = String(b.prompt || '').trim().slice(0, 10000);
+  if (!title || !prompt) return fail(res, 400, 'VALIDATION_ERROR', 'Prompt title and prompt text are required.');
+  const d = { title, category: String(b.category || 'General').trim().slice(0, 60) || 'General', prompt, description: String(b.description || '').trim().slice(0, 500), order: Number(b.order) || 1, enabled: b.enabled !== false, updatedAt: Date.now() };
+  await ref.update(d); ok(res, { prompt: { id: req.params.id, ...d } });
+}));
+app.delete('/api/admin/prompts/:id', aAuth, ah(async (req, res) => { await db.ref('settings/aiPrompts/' + req.params.id).remove(); ok(res); }));
 
 app.put('/api/admin/credentials', aAuth, limit('acred', 10, 600000), ah(async (req, res) => {
   const u = String(req.body.username || '').trim(), p = String(req.body.password || '');
