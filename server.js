@@ -440,33 +440,28 @@ app.post('/api/admin/login', limit('alogin', 8, 600000), ah(async (req, res) => 
   ok(res, { token: signToken({ r: 'a', pv: a.pass.slice(-8) }, 12 * 3600e3) });
 }));
 app.get('/api/admin/data', aAuth, ah(async (req, res) => {
-  // Use unindexed reads here so the admin dashboard still loads even if
-  // Firebase Realtime Database Rules are missing .indexOn declarations.
   const [us, os, wd, docs, promptsSnap, cfg] = await Promise.all([
     db.ref('users').get(),
-    db.ref('orders').get(),
-    db.ref('withdrawals').get(),
-    db.ref('settings/apiDocs').get(),
-    db.ref('settings/aiPrompts').get(),
+    db.ref('orders').orderByChild('createdAt').limitToLast(500).get(),
+    db.ref('withdrawals').orderByChild('createdAt').limitToLast(300).get(),
+    db.ref('settings/apiDocs').orderByChild('order').get(),
+    db.ref('settings/aiPrompts').orderByChild('order').get(),
     getCfg(true)
   ]);
-  const users = [], allOrders = [], allWithdrawals = [], apiDocs = [], prompts = [];
+  const users = [], orders = [], withdrawals = [], apiDocs = [], prompts = [];
   us.forEach(c => { users.push(safeUser(c.val())); });
-  os.forEach(c => { allOrders.push(cleanOrder(c.val())); });
-  wd.forEach(c => { allWithdrawals.push(c.val()); });
+  os.forEach(c => { orders.push(cleanOrder(c.val())); });
+  wd.forEach(c => { withdrawals.push(c.val()); });
   docs.forEach(c => { apiDocs.push(c.val()); });
-  // Keep the most recent records in memory, then sort for the dashboard.
-  allOrders.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
-  allWithdrawals.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
   promptsSnap.forEach(c => { prompts.push(c.val()); });
-  const orders = allOrders.slice(0, 500), withdrawals = allWithdrawals.slice(0, 300);
-  users.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
-  apiDocs.sort((a, b) => (a.order || 0) - (b.order || 0));
-  prompts.sort((a, b) => (a.order || 0) - (b.order || 0));
+  users.sort((a, b) => b.createdAt - a.createdAt); orders.sort((a, b) => b.createdAt - a.createdAt); withdrawals.sort((a, b) => b.createdAt - a.createdAt);
   ok(res, { users, orders, config: cfg, famConfigured: !!FAM_KEY, merchantFamConfigured: false, withdrawals, topups: [], apiDocs, prompts });
 }));
 app.put('/api/admin/config', aAuth, ah(async (req, res) => {
-  const b = req.body, n = x => Number(x);
+  // Support partial updates (e.g. saving or resetting only the Payment UPI ID).
+  // Merge with the current configuration before validating numeric settings.
+  const current = await getCfg();
+  const b = { ...current, ...(req.body || {}) }, n = x => Number(x);
   const v = { siteName: String(b.siteName || 'PayX').trim().slice(0, 40) || 'PayX', tagline: String(b.tagline || '').trim().slice(0, 120), support: String(b.support || '').trim().slice(0, 300), feePercent: n(b.feePercent), minAmount: n(b.minAmount), maxAmount: n(b.maxAmount), expiryMin: n(b.expiryMin), maintenance: !!b.maintenance, paymentUpiId: String(b.paymentUpiId ?? '').trim().slice(0, 120) };
   if ([v.feePercent, v.minAmount, v.maxAmount, v.expiryMin].some(x => !isFinite(x) || x < 0) || v.minAmount > v.maxAmount || v.expiryMin < 1 || v.feePercent > 50) return fail(res, 400, 'VALIDATION_ERROR', 'Check the numbers: fee, limits and payment window must be valid.');
   await db.ref('settings/config').set(v); await getCfg(true); ok(res);
